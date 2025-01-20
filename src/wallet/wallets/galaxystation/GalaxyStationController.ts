@@ -1,15 +1,16 @@
 import { Secp256k1PubKey, getAccount, toBaseAccount } from "cosmes/client";
 import { CosmosCryptoSecp256k1PubKey } from "cosmes/protobufs";
+import { base64 } from "cosmes/codec";
 
 import { WalletName } from "../../constants/WalletName";
 import { WalletType } from "../../constants/WalletType";
 import { onWindowEvent } from "../../utils/window";
-import { WalletConnectV1 } from "../../walletconnect/WalletConnectV1";
+import { WalletConnectV2 } from "../../walletconnect/WalletConnectV2";
 import { ConnectedWallet } from "../ConnectedWallet";
 import { ChainInfo, WalletController } from "../WalletController";
 import { WalletError } from "../WalletError";
 import { GalaxyStationExtension } from "./GalaxyStationExtension";
-import { GalaxyStationWalletConnectV1 } from "./GalaxyStationWalletConnectV1";
+import { GalaxyStationWalletConnectV2 } from "./GalaxyStationWalletConnectV2";
 
 const COIN_TYPE_330_CHAINS = [
   "columbus-5",
@@ -19,23 +20,16 @@ const COIN_TYPE_330_CHAINS = [
 ];
 
 export class GalaxyStationController extends WalletController {
-  private readonly wc: WalletConnectV1;
+  private readonly wc: WalletConnectV2;
 
-  constructor() {
+  constructor(wcProjectId: string) {
     super(WalletName.GALAXYSTATION);
-    this.wc = new WalletConnectV1(
-      "cosmes.wallet.galaxyStation.wcSession",
-      {
-        name: "Galaxy Station",
-        android: "",
-        ios: "",
-        isStation: true,
-      },
-      {
-        bridge: "https://walletconnect.terra.dev",
-        signingMethods: [],
-      }
-    );
+    this.wc = new WalletConnectV2(wcProjectId, {
+      name: "Galaxy Station",
+      android:
+        "galaxystation://wcV2#Intent;package=io.hexxagon.station;scheme=galaxystation;end;",
+      ios: "galaxystation://wcV2",
+    });
     this.registerAccountChangeHandlers();
   }
 
@@ -46,38 +40,34 @@ export class GalaxyStationController extends WalletController {
   protected async connectWalletConnect<T extends string>(
     chains: ChainInfo<T>[]
   ) {
-    for (const { chainId } of chains) {
-      // Galaxy Station mobile's WallectConnect only supports these chains
-      // TODO: update when Galaxy Station mobile supports more chains
-      if (COIN_TYPE_330_CHAINS.includes(chainId)) {
-        continue;
-      }
-      throw new Error(`${chainId} not supported`);
-    }
     const wallets = new Map<T, ConnectedWallet>();
-    const wc = await WalletError.wrap(this.wc.connect());
-    // Galaxy Station mobile only returns 1 address for now
-    // TODO: update when Galaxy Station mobile supports more chains
-    const address = wc.accounts[0];
+    await WalletError.wrap(
+      this.wc.connect(chains.map(({ chainId }) => chainId))
+    );
     for (let i = 0; i < chains.length; i++) {
       const { chainId, rpc, gasPrice } = chains[i];
-      try {
-        // Since Galaxy Station's WalletConnect doesn't support getting pub keys, we
-        // need to query the account to get it. However, if the wallet does
-        // not contain funds, the RPC will throw errors.
-        const key = await WalletError.wrap(
-          this.getPubKey(chainId, rpc, address)
-        );
-        wallets.set(
+      const { name, pubkey, address } = await WalletError.wrap(
+        this.wc.getAccount(chainId)
+      );
+      const key = new Secp256k1PubKey({
+        chainId,
+        key: base64.decode(pubkey),
+      });
+      wallets.set(
+        chainId,
+        new GalaxyStationWalletConnectV2(
+          this.id,
+          name,
+          this.wc,
           chainId,
-          new GalaxyStationWalletConnectV1(wc, chainId, key, address, rpc, gasPrice)
-        );
-      } catch (err) {
-        // We simply log and ignore the error for now
-        console.warn(err);
-      }
+          key,
+          address,
+          rpc,
+          gasPrice,
+          true // TODO: use sign mode direct when supported
+        )
+      );
     }
-    this.wc.cacheSession(wc);
     return { wallets, wc: this.wc };
   }
 
@@ -91,7 +81,7 @@ export class GalaxyStationController extends WalletController {
     await WalletError.wrap(ext.enable(chains.map(({ chainId }) => chainId)));
     for (const { chainId, rpc, gasPrice } of Object.values(chains)) {
       try {
-        const { bech32Address, pubKey, isNanoLedger } = await WalletError.wrap(
+        const { name, bech32Address, pubKey, isNanoLedger } = await WalletError.wrap(
           ext.getKey(chainId)
         );
         const key = new Secp256k1PubKey({
@@ -102,6 +92,7 @@ export class GalaxyStationController extends WalletController {
           chainId,
           new GalaxyStationExtension(
             this.id,
+            name,
             ext,
             chainId,
             key,
@@ -130,7 +121,7 @@ export class GalaxyStationController extends WalletController {
     onWindowEvent("galaxy_station_network_change", () =>
       this.changeAccount(WalletType.EXTENSION)
     );
-    // Galaxy Station's WalletConnect v1 doesn't support account change events
+    this.wc.onAccountChange(() => this.changeAccount(WalletType.WALLETCONNECT));
   }
 
   private async getPubKey(
