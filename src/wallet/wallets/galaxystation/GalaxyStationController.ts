@@ -26,7 +26,7 @@ export class GalaxyStationController extends WalletController {
     super(WalletName.GALAXYSTATION);
     this.wc = new WalletConnectV2(wcProjectId, {
       name: "Galaxy Station",
-      android: "https://localhost:3000/wcV2#Intent;package=io.hexxagon.station;scheme=galaxystation;end;",
+      android: "https://station.hexxagon.io/wcV2#Intent;package=io.hexxagon.station;scheme=galaxystation;end;",
       ios: "https://station.hexxagon.io/wcV2",
     });
     this.registerAccountChangeHandlers();
